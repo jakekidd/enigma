@@ -103,12 +103,12 @@ contract Enigma {
     function execute(bytes32 encrypted, int256 limit) external {
         LimitOrder memory order = orders[msg.sender][encrypted];
 
+        // Check to make sure order exists.
+        require(order.blocknum == 0, "Order does not exist.");
+
         execute(order);
 
-        // Check if there's a fee and pay out to caller.
-        if (order.fee > 0) {
-            msg.sender.call{value: order.fee}("");
-        }
+        emit OrderExecuted(encrypted, msg.sender);
     }
 
     /**
@@ -127,10 +127,7 @@ contract Enigma {
 
         execute(order); // 66
 
-        // Check if there's a fee and pay out to caller.
-        if (order.fee > 0) {
-            msg.sender.call{value: order.fee}("");
-        }
+        emit OrderExecuted(encrypted, trader);
     }
 
     /**
@@ -138,7 +135,6 @@ contract Enigma {
      * of the public endpoints for execute.
      */
     function execute(LimitOrder memory order) private {
-        LimitOrder storage order = orders[_orderHash];
 
         // TODO:
         // Check for market conditions and execution logic here...
@@ -146,7 +142,10 @@ contract Enigma {
         // TODO:
         // Logic to swap tokens based on order details would go here...
 
-        emit OrderExecuted(_orderHash, msg.sender);
+        // Check if there's a fee and pay out to caller.
+        if (order.fee > 0) {
+            msg.sender.call{value: order.fee}("");
+        }
     }
 
     /// UTILITY METHODS
