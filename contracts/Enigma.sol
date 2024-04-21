@@ -73,6 +73,8 @@ contract Enigma is AccessControl {
     event OrderOpened(bytes32 indexed encrypted, address indexed trader, uint256 fee);
     // Event to emit when an order is executed.
     event OrderExecuted(bytes32 indexed encrypted, address indexed trader);
+    // Event to emit when an order is cancelled.
+    event OrderCancelled(bytes32 indexed encrypted, address indexed trader);
 
     /**
      * @notice Init Enigma. Note that the contract starts paused to enable AMMs to deposit
@@ -126,9 +128,8 @@ contract Enigma is AccessControl {
 
     /// READ METHODS
 
-    // TODO: Method for reading from orders placed (e.g. read fee, block).
     /**
-     * @notice Returns whether the system is currently paused.
+     * @notice Returns limit order for given trader and limit hash.
      * @param trader - Trader address.
      * @param encrypted - Order limit hash.
      * @return bool - Whether paused.
@@ -220,7 +221,30 @@ contract Enigma is AccessControl {
         emit OrderOpened(encrypted, msg.sender, fee);
     }
 
-    // TODO: Cancel method
+    /**
+     * @notice Cancels an existing limit order. Can only be canceled by the order creator and only if the order has not been executed.
+     * @param encrypted - The hashed limit price in stablecoin of the order to be canceled.
+     */
+    function cancel(bytes32 encrypted) external {
+        EnigmaLimitOrder memory order = orders[msg.sender][encrypted];
+
+        // Check that the order exists and has not been executed.
+        require(order.blocknum != 0, "Order does not exist.");
+        require(!order.executed, "Order already executed.");
+
+        // Mark the order as executed to prevent re-entrance or reuse of the same order.
+        order.executed = true;
+
+        // Refund any associated fees if applicable.
+        if (order.fee > 0) {
+            (bool sent, ) = payable(msg.sender).call{value: order.fee}("");
+            require(sent, "Failed to refund fee.");
+        }
+
+        // Emit an event for the order cancellation.
+        emit OrderCancelled(encrypted, msg.sender);
+    }
+
 
     /**
      * @notice Executes a limit order. Direct submission from trader.
@@ -281,6 +305,9 @@ contract Enigma is AccessControl {
 
         // Check to make sure order exists.
         assertOrderExists(order);
+
+        // Order must not have been executed.
+        require(!order.executed, "Order has already been executed.");
 
         // Ensure parity is met.
         require(
