@@ -86,8 +86,15 @@ contract Enigma is AccessControl {
      * blocks.
      * @param _tau - The amount of time *in seconds* required between initiating a pause
      * and pausing.
+     * @param _owner - The owner address. If left at zero, msg.sender will be used.
      */
-    constructor(address _stable, address _asset, uint256 _parity, uint256 _tau) {
+    constructor(
+        address _stable,
+        address _asset,
+        uint256 _parity,
+        uint256 _tau,
+        address _owner
+    ) {
         stable = IERC20(_stable);
         asset = IERC20(_asset);
 
@@ -107,7 +114,7 @@ contract Enigma is AccessControl {
         paused = block.number;
 
         // Add global admin role.
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _owner != address(0) ? _owner : msg.sender);
     }
 
     /**
