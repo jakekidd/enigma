@@ -4,6 +4,8 @@ Enigma is an exchange contract with an ecosystem of traders (and relayers). It h
 
 The "Trader" agent is a program written in Rust to monitor pool price to watch for limit being reached.
 
+A web app could be built to allow users to monitor instances of the trader agent program, or even execute manually (although it would require good timing).
+
 Some notes:
 * Immediate market orders for swaps cannot be placed. Traders *must* deliver limit orders in the form of a hashed signed integer representing the limit price for execution.
 * The sign of the limit price integer indicates a sell (negative) or buy (positive).

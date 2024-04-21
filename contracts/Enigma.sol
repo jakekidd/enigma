@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.14;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
 // Structure to hold order details; provided externally in case consumer
 // contracts need to import for interaction. Delivered when an order is opened.
-struct LimitOrder {
+struct EnigmaLimitOrder {
     uint256 fee;        // Fee associated with the order.
     uint256 blocknum;   // Block number that this order was delivered.
     bool executed;      // Whether the order has been executed.
+}
+
+// Structure to represent the token pool.
+struct EnigmaTokenPool {
+    uint256 stableBalance;  // The balance of stablecoin tokens in the pool.
+    uint256 assetBalance;   // The balance of non-stable asset in the pool.
 }
 
 /**
@@ -30,21 +37,37 @@ struct LimitOrder {
  * indicating a 'sell' (swap asset -> stable) and positive values indicating a 'buy' (swap
  * stable -> asset).
  */
-contract Enigma {
+contract Enigma is AccessControl {
     // A reasonable range.
     uint256 public constant MIN_PARITY = 1;
     uint256 public constant MAX_PARITY = 10;
-    // The parity requirement between opening and executing for the pool in blocks.
-    uint256 public immutable PARITY_REQ;
+    // Another reasonable range.
+    uint256 public constant MIN_TAU = 12 hours;
+    uint256 public constant MAX_TAU = 168 hours;
+    // Used in pause initiation time calculation. Kind of risky with how the EVM
+    // improves this aspect over time.
+    uint256 private constant AVG_BLOCK_TIME_SECONDS = 14;
 
-    // TODO: Support multiple pools.
+    // The parity requirement between opening and executing for the pool in blocks.
+    uint256 public immutable PARITY;
+    // The time requirement *in number of blocks* from pause initiation to enaction.
+    uint256 public immutable TAU;
+
     // TODO: Support any-any tokens.
     // Tokens in the stable <> asset pool.
     IERC20 public stable;
     IERC20 public asset;
 
+    // TODO: Support multiple pools.
+    // Token pool tracking the token balances.
+    TokenPool public pool;
+
     // Mapping of traders to encrypted order limit hashes to opened order details.
-    mapping(address => mapping(bytes32 => LimitOrder)) public orders;
+    mapping(address => mapping(bytes32 => EnigmaLimitOrder)) public orders;
+
+    // When the system was paused, enabling AMMs to deposit liquidity. If current block
+    // number is less than this, system is considered to be unpaused.
+    uint256 public paused;
 
     // Event to emit when an order is opened.
     event OrderOpened(bytes32 indexed encrypted, address indexed trader, uint256 fee);
@@ -52,26 +75,77 @@ contract Enigma {
     event OrderExecuted(bytes32 indexed encrypted, address indexed trader);
 
     /**
-     * @notice Init Enigma.
+     * @notice Init Enigma. Note that the contract starts paused to enable AMMs to deposit
+     * initial liquidity.
      * @param _stable - A valid stablecoin ERC20 address. Stablecoin status is not verified,
      * thus should be established by consumers of the instance independently.
      * @param _asset - The traded asset.
      * @param _parity - The parity requirement between opening and executing for the pool in
      * blocks.
+     * @param _tau - The amount of time required between initiating a pause and pausing.
      */
-    constructor(address _stable, address _asset, uint256 _parity) {
+    constructor(address _stable, address _asset, uint256 _parity, uint256 _tau) {
         stable = IERC20(_stable);
         asset = IERC20(_asset);
 
-        require(_parity >= MIN_PARITY && _parity <= MAX_PARITY, "Parity given not within min/max range.");
+        require(
+            _parity >= MIN_PARITY && _parity <= MAX_PARITY,
+            "Parity given not within min/max range."
+        );
         PARITY_REQ = _parity;
+
+        paused = block.number;
+
+        // Add global admin role.
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+    }
+
+    /**
+     * @notice Modifier that allows function execution only when the contract is *not* paused.
+     */
+    modifier whenNotPaused() {
+        require(block.number < paused, "Contract is paused.");
+        _;
+    }
+
+    /**
+     * @notice Modifier that allows function execution only when the contract *is* paused.
+     */
+    modifier whenPaused() {
+        require(block.number >= paused, "Contract is not paused.");
+        _;
     }
 
     /// READ METHODS
 
     // TODO: Method for read prices, read from orders placed (e.g. read fee, block).
 
-    /// WRITE METHODS
+    /**
+     * @notice Returns whether the system is currently paused.
+     */
+    function isPaused() external {
+        return paused >= block.number;
+    }
+
+    /// AMM DEPOSIT METHODS
+
+    function initiatePause() external onlyOwner {
+        paused = block.number + TAU;
+    }
+
+    function removePause() external onlyOwner {
+        paused = 0;
+    }
+
+    function depositStable(uint256 amount) public whenNotPaused {
+        require(stable.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+    }
+
+    function depositAsset(uint256 amount) public whenNotPaused {
+        require(asset.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+    }
+
+    /// LIMIT ORDER METHODS
 
     /**
      * @notice Opens an encrypted limit order, obfuscating the trader's levels. Order
@@ -85,13 +159,15 @@ contract Enigma {
      */
     function open(bytes32 encrypted) external {
         uint256 fee = msg.value;
-        orders[msg.sender][encrypted] = LimitOrder({
+        orders[msg.sender][encrypted] = EnigmaLimitOrder({
             fee: fee,
             blocknum: block.number
         });
 
         emit OrderOpened(encrypted, msg.sender, fee);
     }
+
+    // TODO: Cancel method
 
     /**
      * @notice Executes a limit order. Direct submission from trader.
@@ -100,8 +176,8 @@ contract Enigma {
      * @dev Limit is a signed integer. If negative, it indicates we are selling, positive
      * indicates buying.
      */
-    function execute(bytes32 encrypted, int256 limit) external {
-        LimitOrder memory order = orders[msg.sender][encrypted];
+    function execute(bytes32 encrypted, int256 limit) external whenNotPaused {
+        EnigmaLimitOrder memory order = orders[msg.sender][encrypted];
 
         // Check to make sure order exists.
         require(order.blocknum == 0, "Order does not exist.");
@@ -115,12 +191,12 @@ contract Enigma {
      * @notice Executes a limit order. Indirect submission from relayer on trader's behalf,
      * requiring signature.
      */
-    function execute(bytes32 encrypted, int256 limit, bytes memory signature) external {
+    function execute(bytes32 encrypted, int256 limit, bytes memory signature) external whenNotPaused {
         // Decrypt the provided signature to get the trader address.
         bytes32 digest = keccak256(abi.encodePacked(limit));
         address trader = recoverSigner(message, signature);
 
-        LimitOrder memory order = orders[trader][encrypted];
+        EnigmaLimitOrder memory order = orders[trader][encrypted];
 
         // Check to make sure order exists.
         require(order.blocknum == 0, "Order does not exist.");
@@ -134,7 +210,9 @@ contract Enigma {
      * @notice Executes a limit order. This private function is to be called from either
      * of the public endpoints for execute.
      */
-    function execute(LimitOrder memory order) private {
+    function execute(EnigmaLimitOrder memory order) private {
+
+        // TODO: Ensure parity is met.
 
         // TODO:
         // Check for market conditions and execution logic here...
@@ -149,6 +227,20 @@ contract Enigma {
     }
 
     /// UTILITY METHODS
+
+    /**
+     * @notice Check whether the pool conditions are met for the limit to merit execution.
+     * @param limit - Signed integer limit value.
+     */
+    function assertLimitMet(int256 limit) private {
+        if (limit < 0) {
+            // If sign is negative, it's the price at which to sell (asset -> stable).
+            // TODO
+        } else {
+            // If sign is positive, it's the price at which to buy (stable -> asset).
+            // TODO
+        }
+    }
 
     /**
      * @notice Helper method for splitting a signature and doing ecrecover to get the
