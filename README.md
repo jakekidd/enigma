@@ -13,3 +13,5 @@ Some notes:
 * An optional fee can be used if the trader wishes to utilize a third-party relayer service.
 * Traders can have multiple limit orders open at a time.
 * Market inefficiencies can be corrected with a sort of "delayed market order" - essentially a limit order, but placed with the limit already exceeded. It will still have to wait the parity number of blocks.
+* This is an `Owned` contract, and the access control usage is limited to handling `paused` events. In the ideal version of this system, the ownership would likely be assigned to a DAO.
+* When the contract is paused, AMMs can deposit liquidity to set up and balance the pool.

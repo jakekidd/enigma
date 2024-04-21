@@ -82,7 +82,8 @@ contract Enigma is AccessControl {
      * @param _asset - The traded asset.
      * @param _parity - The parity requirement between opening and executing for the pool in
      * blocks.
-     * @param _tau - The amount of time required between initiating a pause and pausing.
+     * @param _tau - The amount of time *in seconds* required between initiating a pause
+     * and pausing.
      */
     constructor(address _stable, address _asset, uint256 _parity, uint256 _tau) {
         stable = IERC20(_stable);
@@ -94,6 +95,13 @@ contract Enigma is AccessControl {
         );
         PARITY_REQ = _parity;
 
+        require(
+            _tau >= MIN_TAU && _tau <= MAX_TAU,
+            "Tau given not within min/max range."
+        );
+        tau = _tau / AVG_BLOCK_TIME_SECONDS;
+
+        // Start the system paused so AMMs can add initial liquidity.
         paused = block.number;
 
         // Add global admin role.
@@ -129,20 +137,38 @@ contract Enigma is AccessControl {
 
     /// AMM DEPOSIT METHODS
 
+    /**
+     * @notice To be called by owner to initiate a pause cycle.
+     */
     function initiatePause() external onlyOwner {
         paused = block.number + TAU;
     }
 
+    /**
+     * @notice To be called by owner to end a pause cycle.
+     */
     function removePause() external onlyOwner {
         paused = 0;
     }
 
+    /**
+     * @notice To be called by AMMs to deposit stablecoin tokens into the pool.
+     */
     function depositStable(uint256 amount) public whenNotPaused {
-        require(stable.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+        require(
+            stable.transferFrom(msg.sender, address(this), amount),
+            "Transfer failed."
+        );
     }
 
+    /**
+     * @notice To be called by AMMs to deposit asset tokens into the pool.
+     */
     function depositAsset(uint256 amount) public whenNotPaused {
-        require(asset.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+        require(
+            asset.transferFrom(msg.sender, address(this), amount),
+            "Transfer failed."
+        );
     }
 
     /// LIMIT ORDER METHODS
@@ -177,12 +203,13 @@ contract Enigma is AccessControl {
      * indicates buying.
      */
     function execute(bytes32 encrypted, int256 limit) external whenNotPaused {
+        // We check for pool conditions here, first thing, to save gas on executions
+        // where the price might retrace back across the limit line.
+        assertLimitIsMet(limit);
+
         EnigmaLimitOrder memory order = orders[msg.sender][encrypted];
 
-        // Check to make sure order exists.
-        require(order.blocknum == 0, "Order does not exist.");
-
-        execute(order);
+        execute(order, encrypted, limit);
 
         emit OrderExecuted(encrypted, msg.sender);
     }
@@ -191,17 +218,22 @@ contract Enigma is AccessControl {
      * @notice Executes a limit order. Indirect submission from relayer on trader's behalf,
      * requiring signature.
      */
-    function execute(bytes32 encrypted, int256 limit, bytes memory signature) external whenNotPaused {
+    function execute(
+        bytes32 encrypted,
+        int256 limit,
+        bytes memory signature
+    ) external whenNotPaused {
+        // We check for pool conditions here, first thing, to save gas on executions
+        // where the price might retrace back across the limit line.
+        assertLimitIsMet(limit);
+
         // Decrypt the provided signature to get the trader address.
         bytes32 digest = keccak256(abi.encodePacked(limit));
         address trader = recoverSigner(message, signature);
 
         EnigmaLimitOrder memory order = orders[trader][encrypted];
 
-        // Check to make sure order exists.
-        require(order.blocknum == 0, "Order does not exist.");
-
-        execute(order); // 66
+        execute(order /** 66 */, encrypted, limit);
 
         emit OrderExecuted(encrypted, trader);
     }
@@ -209,13 +241,20 @@ contract Enigma is AccessControl {
     /**
      * @notice Executes a limit order. This private function is to be called from either
      * of the public endpoints for execute.
+     * @param order - The limit order placed prior.
+     * @param encrypted - The limit value's submitted encrypted value.
      */
-    function execute(EnigmaLimitOrder memory order) private {
+    function execute(EnigmaLimitOrder memory order, bytes32 encrypted, int256 limit) private {
+        // Ensure encrypted matches limit.
+        require(
+            encrypted == keccak256(limit),
+            "Hash value for limit price does not match committed."
+        );
+
+        // Check to make sure order exists.
+        assertOrderExists(order);
 
         // TODO: Ensure parity is met.
-
-        // TODO:
-        // Check for market conditions and execution logic here...
 
         // TODO:
         // Logic to swap tokens based on order details would go here...
@@ -232,10 +271,19 @@ contract Enigma is AccessControl {
      * @notice Check whether the pool conditions are met for the limit to merit execution.
      * @param limit - Signed integer limit value.
      */
+    function assertOrderExists(EnigmaLimitOrder memory order) private {
+        require(order.blocknum != 0, "Order does not exist.");
+    }
+
+    /**
+     * @notice Check whether the pool conditions are met for the limit to merit execution.
+     * @param limit - Signed integer limit value.
+     */
     function assertLimitMet(int256 limit) private {
         if (limit < 0) {
             // If sign is negative, it's the price at which to sell (asset -> stable).
             // TODO
+
         } else {
             // If sign is positive, it's the price at which to buy (stable -> asset).
             // TODO
