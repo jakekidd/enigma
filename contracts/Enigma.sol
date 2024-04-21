@@ -126,12 +126,25 @@ contract Enigma is AccessControl {
 
     /// READ METHODS
 
-    // TODO: Method for read prices, read from orders placed (e.g. read fee, block).
+    // TODO: Method for reading from orders placed (e.g. read fee, block).
+
+    /**
+     * @notice Retrieves the current price of the asset in terms of stablecoin. This
+     * function assumes price is a direct ratio of stablecoin to asset balance.
+     * In real scenarios, you may want to adjust this to include fees, slippage, or
+     * use an external price oracle.
+     */
+    function getPrice() public view returns (uint256) {
+        // Price is defined as stableBalance / assetBalance.
+        // Ensure no division by zero.
+        require(pool.assetBalance > 0, "Asset balance is zero, cannot determine price.");
+        return pool.stableBalance / pool.assetBalance;
+    }
 
     /**
      * @notice Returns whether the system is currently paused.
      */
-    function isPaused() external {
+    function isPaused() external view {
         return paused >= block.number;
     }
 
@@ -197,10 +210,10 @@ contract Enigma is AccessControl {
 
     /**
      * @notice Executes a limit order. Direct submission from trader.
-     * @param encrypted - Hashed limit price in stablecoin.
-     * @param limit - The actual limit in stablecoin.
      * @dev Limit is a signed integer. If negative, it indicates we are selling, positive
      * indicates buying.
+     * @param encrypted - Hashed limit price in stablecoin.
+     * @param limit - The actual limit in stablecoin.
      */
     function execute(bytes32 encrypted, int256 limit) external whenNotPaused {
         // We check for pool conditions here, first thing, to save gas on executions
@@ -243,6 +256,7 @@ contract Enigma is AccessControl {
      * of the public endpoints for execute.
      * @param order - The limit order placed prior.
      * @param encrypted - The limit value's submitted encrypted value.
+     * @param limit - The actual target limit price to execute.
      */
     function execute(EnigmaLimitOrder memory order, bytes32 encrypted, int256 limit) private {
         // Ensure encrypted matches limit.
@@ -254,10 +268,14 @@ contract Enigma is AccessControl {
         // Check to make sure order exists.
         assertOrderExists(order);
 
-        // TODO: Ensure parity is met.
+        // Ensure parity is met.
+        require(
+            block.number - order.blocknum >= PARITY, "Parity not met."
+        );
 
         // TODO:
         // Logic to swap tokens based on order details would go here...
+
 
         // Check if there's a fee and pay out to caller.
         if (order.fee > 0) {
@@ -282,11 +300,11 @@ contract Enigma is AccessControl {
     function assertLimitMet(int256 limit) private {
         if (limit < 0) {
             // If sign is negative, it's the price at which to sell (asset -> stable).
-            // TODO
-
+            // Here, `limit` is negative, so we compare with its inverted value.
+            require(price >= uint256(-limit), "Current price is too low to sell.");
         } else {
             // If sign is positive, it's the price at which to buy (stable -> asset).
-            // TODO
+            require(price <= uint256(limit), "Current price is too high to buy.");
         }
     }
 
