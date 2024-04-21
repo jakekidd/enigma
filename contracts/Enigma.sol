@@ -127,12 +127,25 @@ contract Enigma is AccessControl {
     /// READ METHODS
 
     // TODO: Method for reading from orders placed (e.g. read fee, block).
+    /**
+     * @notice Returns whether the system is currently paused.
+     * @param trader - Trader address.
+     * @param encrypted - Order limit hash.
+     * @return bool - Whether paused.
+     */
+    function getOrder(
+        address trader,
+        bytes32 encrypted
+    ) external view returns (EnigmaLimitOrder storage) {
+        return orders[trader][encrypted];
+    }
 
     /**
      * @notice Retrieves the current price of the asset in terms of stablecoin. This
      * function assumes price is a direct ratio of stablecoin to asset balance.
      * In real scenarios, you may want to adjust this to include fees, slippage, or
      * use an external price oracle.
+     * @return uint256 - The price amount.
      */
     function getPrice() public view returns (uint256) {
         // Price is defined as stableBalance / assetBalance.
@@ -143,8 +156,9 @@ contract Enigma is AccessControl {
 
     /**
      * @notice Returns whether the system is currently paused.
+     * @return bool - Whether paused.
      */
-    function isPaused() external view {
+    function isPaused() external view returns (bool) {
         return paused >= block.number;
     }
 
@@ -273,13 +287,25 @@ contract Enigma is AccessControl {
             block.number - order.blocknum >= PARITY, "Parity not met."
         );
 
-        // TODO:
-        // Logic to swap tokens based on order details would go here...
+        // Determine the amount of tokens to swap based on the pool's current price
+        uint256 amountToSwap = calculateAmountToSwap(limit);
 
+        if (limit < 0) {
+            // Selling asset for stable: asset -> stable
+            require(pool.assetBalance >= amountToSwap, "Insufficient asset balance.");
+            pool.assetBalance -= amountToSwap;
+            pool.stableBalance += amountToSwap;
+        } else {
+            // Buying asset with stable: stable -> asset
+            require(pool.stableBalance >= amountToSwap, "Insufficient stable balance.");
+            pool.stableBalance -= amountToSwap;
+            pool.assetBalance += amountToSwap;
+        }
 
         // Check if there's a fee and pay out to caller.
         if (order.fee > 0) {
-            msg.sender.call{value: order.fee}("");
+            (bool sent, ) = msg.sender.call{value: order.fee}("");
+            require(sent, "Failed to send fee.");
         }
     }
 
@@ -305,6 +331,21 @@ contract Enigma is AccessControl {
         } else {
             // If sign is positive, it's the price at which to buy (stable -> asset).
             require(price <= uint256(limit), "Current price is too high to buy.");
+        }
+    }
+
+    /**
+     * @notice Calculates the amount of tokens to swap based on the limit.
+     * @param limit - The limit price, used to calculate the swap amount.
+     * @return uint256 - The amount of tokens to swap.
+     */
+    function calculateAmountToSwap(int256 limit) private view returns (uint256) {
+        // Simplistic calculation: this should ideally depend on the order size and/or current pool size
+        uint256 price = getPrice();
+        if (limit < 0) {
+            return pool.assetBalance * uint256(-limit) / price / 100; // Example proportion for selling
+        } else {
+            return pool.stableBalance * uint256(limit) / price / 100; // Example proportion for buying
         }
     }
 
